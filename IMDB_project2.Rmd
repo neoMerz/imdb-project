@@ -1,0 +1,1017 @@
+---
+title: "IMDb Dataset Analysis"
+author: "Nicolo' Merzi, Francesco Battista"
+subtitle: Statistical Learning Project - Predicting IMDb Score
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+```
+
+
+![](./dataset-original.jpg)
+
+## 1. Introduction
+
+Internet Movie Database (IMDb) is the world's most popular source for movies, TV and celebrity content. The goal of this project is to create statistical models using data mining algorithms to predict the ratings of movies. Such analysis can help in having a better understanding of what makes a movie succesfull.
+
+Dataset can be found at:
+https://data.world/data-society/imdb-5000-movie-dataset#
+
+## 2. Data Description
+
+The dataset consists of 28 variables for 5043 movies. Our response variables is *imdb_score* and the other 27 variables are possible predictors.
+
+Variable Name            | Description
+-------------------------|----------------------------------------------
+movie_title              | Title of the Movie
+duration                 | Duration (Minutes)
+director_name            | Name of the Director of the Movie
+director_facebook_likes  | Number of likes of the Director on his Facebook Page
+actor_1_name             | Primary actor starring in the movie
+actor_1_facebook_likes   | Number of likes of the Actor_1 on his/her Facebook Page
+actor_2_name             | Other actor starring in the movie
+actor_2_facebook_likes   | Number of likes of the Actor_2 on his/her Facebook Page
+actor_3_name             | Other actor starring in the movie
+actor_3_facebook_likes   | Number of likes of the Actor_3 on his/her Facebook Page
+num_user_for_reviews     | Number of users who gave a review
+num_critic_for_reviews   | Number of critical reviews on imdb
+num_voted_users          | Number of people who voted for the movie
+cast_total_facebook_likes| Total number of facebook likes of the entire cast of the movie
+movie_facebook_likes     | Number of Facebook likes in the movie page
+plot_keywords            | Keywords describing the movie plot
+facenumber_in_poster     | Number of the actor who featured in the movie poster
+color                    | Film colorization. (‘Black and White’ or ‘Color’)
+genres                   | Film categorization (‘Animation’, ‘Comedy’, ‘Romance’, ‘Horror’, ‘Sci-Fi’, ‘Action’, ‘Family’)
+title_year               | The year in which the movie is released (1916:2016)
+language                 | Original Language of the movie
+country                  | Country where the movie is produced
+content_rating           | Content rating of the movie
+aspect_ratio             | Aspect ratio the movie 
+movie_imdb_link          | IMDB link of the movie
+gross                    | USA gross earnings of the movie (Dollars)
+budget                   | Budget of the movie (Dollars)
+imdb_score               | IMDB Score of the movie
+
+```{r, echo=FALSE, message=F, warning=F}
+library(tidyverse)
+library(ggrepel)
+library(corrplot)
+library(ggplot2)
+library(GGally)
+library(data.table)
+library(caret)
+```
+
+## 3. Data Exploration
+
+### 3.1 Read Data
+
+```{r, echo=FALSE}
+wd <- getwd()
+setwd(wd)
+IMDB <- read.csv("./movie_metadata.csv")
+str(IMDB)
+```
+
+We have 5043 obs. of 28 variables. Response variable *imdb_score* is a numerical variable and the other predictors are a mix of numerical and categorical variables.
+
+## 4. Data Cleaning
+
+### 4.1 Remove duplicate rows
+
+Let's check for duplicate rows. 
+
+```{r}
+sum(duplicated(IMDB))
+```
+
+We have found 45, let's remove them.
+
+```{r}
+IMDB <- IMDB[!duplicated(IMDB), ]
+```
+
+We are now left with 4998 observations.
+```{r}
+dim(IMDB)
+```
+
+
+### 4.2 Missing values
+
+Check how many missing values we have for each column.
+
+```{r, echo=FALSE} 
+library(naniar)
+miss_variables = gg_miss_var(IMDB)$data$n_miss
+col_names = gg_miss_var(IMDB)$data$variable
+
+do.call(rbind, Map(data.frame, names = col_names, miss_var = miss_variables))%>%
+  filter(miss_var > 0)%>%
+  arrange(desc(miss_var))%>%
+  ggplot(aes(names, miss_var))+
+  geom_bar(stat = "identity", fill = "#4fc3f7")+
+  geom_text(aes(label = miss_var), size = 3, hjust = -0.25, color = "#1565c0")+
+  scale_y_continuous(breaks = seq(0,900,100))+
+  coord_flip()+
+  labs(title = "Missing Variables on IMBD ",
+       x = "Columns",
+       y = "Missing values")+
+  theme(axis.text.y = element_text(size = 8),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+```
+
+*gross*, *budget* and *aspect_ratio* have the most missing values with 874, 487 and 327 NA respectively. The number of missing values on those columns is quite high, for this reason we cannot replace them with reasonable data (e.g mean of the column), so let's remove those rows.
+
+```{r}
+IMDB <- IMDB[!is.na(IMDB$gross), ]
+IMDB <- IMDB[!is.na(IMDB$budget), ]
+IMDB <- IMDB[!is.na(IMDB$aspect_ratio), ]
+dim(IMDB)
+```
+
+We are left with 3783 observations.
+
+### 4.3 Deal with 0s
+
+There are some 0 values that should be treated as missing values (except for *facenumber_in_poster*). The columns containing 0 values are:
+
+* *num_critic_for_reviews*
+* *director_facebook_likes*
+* *actor_3_facebook_likes*
+* *actor_1_facebook_likes*
+* *cast_total_facebook_likes*
+* *actor_2_facebook_likes*
+* *movie_facebook_likes*
+
+First we replace missing values of *facenumber_in_poster* with the column average.
+
+```{r}
+IMDB$facenumber_in_poster[is.na(IMDB$facenumber_in_poster)] <- round(mean(IMDB$facenumber_in_poster, na.rm = TRUE))
+```
+
+After that we convert 0 values of the other predictors to NA and then we replace them with the column average.
+
+```{r}
+#convert 0s to NA for columns containing 0 values
+IMDB[,c(3,5,6,8,14,25,28)][IMDB[,c(3,5,6,8,14,25,28)] == 0] <- NA
+
+#replace NA with columns average
+IMDB$num_critic_for_reviews[is.na(IMDB$num_critic_for_reviews)] <- round(mean(IMDB$num_critic_for_reviews, na.rm = TRUE))
+IMDB$director_facebook_likes[is.na(IMDB$director_facebook_likes)] <- round(mean(IMDB$director_facebook_likes, na.rm = TRUE))
+IMDB$actor_3_facebook_likes[is.na(IMDB$actor_3_facebook_likes)] <- round(mean(IMDB$actor_3_facebook_likes, na.rm = TRUE))
+IMDB$actor_1_facebook_likes[is.na(IMDB$actor_1_facebook_likes)] <- round(mean(IMDB$actor_1_facebook_likes, na.rm = TRUE))
+IMDB$cast_total_facebook_likes[is.na(IMDB$cast_total_facebook_likes)] <- round(mean(IMDB$cast_total_facebook_likes, na.rm = TRUE))
+IMDB$actor_2_facebook_likes[is.na(IMDB$actor_2_facebook_likes)] <- round(mean(IMDB$actor_2_facebook_likes, na.rm = TRUE))
+IMDB$movie_facebook_likes[is.na(IMDB$movie_facebook_likes)] <- round(mean(IMDB$movie_facebook_likes, na.rm = TRUE))
+```
+
+
+### 4.4 Missing values for categorical variables
+
+There are 32 missing values for column *content_ratings* as blank strings (""). Since we cannot replace those values with reasonable data we remove those rows.
+
+```{r}
+table(IMDB$content_rating)
+```
+
+```{r}
+#remove blank strings ("") for column content_rating
+IMDB <- IMDB[!(IMDB$content_rating == ""), ]
+```
+
+We are now left with 3751 observations.
+
+Countries have different content rating systems for movies. Some levels of *content_rating* have different names but mean the same thing, so let's group them togheter according to the most used content rating system: the Motion Picture Association of America (MPAA). According to: https://en.wikipedia.org/wiki/Motion_picture_content_rating_system: 
+
+* M = GP = PG
+* X = NC-17
+
+```{r}
+#replace M and GP with PG
+IMDB$content_rating[IMDB$content_rating == 'M']   <- 'PG' 
+IMDB$content_rating[IMDB$content_rating == 'GP']  <- 'PG' 
+#replace X with NC-17
+IMDB$content_rating[IMDB$content_rating == 'X']   <- 'NC-17'
+```
+
+We then replace "Approved", "Not Rated", "Passed", "Unrated" with the most common rating "R".
+
+```{r}
+IMDB$content_rating[IMDB$content_rating == 'Approved']  <- 'R' 
+IMDB$content_rating[IMDB$content_rating == 'Not Rated'] <- 'R' 
+IMDB$content_rating[IMDB$content_rating == 'Passed']    <- 'R' 
+IMDB$content_rating[IMDB$content_rating == 'Unrated']   <- 'R' 
+IMDB$content_rating <- factor(IMDB$content_rating)
+table(IMDB$content_rating)
+```
+
+We are left with the 5 content ratings of the Motion Piture Association of America (MPAA).
+
+### 4.5 Variables Distribution
+
+let's check how variables are distributed.
+
+#### 4.5.1 Color
+
+```{r}
+table(IMDB$color)
+```
+
+We see that the vast majority of movies are colored meaning that this variable is almost constant, so we can remove it.
+
+```{r}
+IMDB <- subset(IMDB, select = -c(color))
+```
+
+#### 4.5.2 Country
+
+```{r}
+table(IMDB$country)
+
+```
+
+Most movies are from USA, followed by UK. In order to have fewer levels we group togheter all movies that were not made in USA or UK.
+
+```{r}
+levels(IMDB$country) <- c(levels(IMDB$country), "Others")
+IMDB$country[(IMDB$country != 'USA')&(IMDB$country != 'UK')] <- 'Others' 
+IMDB$country <- factor(IMDB$country)
+table(IMDB$country)
+```
+
+#### 4.5.3 Language
+
+```{r}
+table(IMDB$language)
+```
+
+The vast majoirty of movies are in English meaning that *language* is nearly constant, so we can remove it.
+
+```{r}
+IMDB <- subset(IMDB, select = -c(language))
+```
+
+#### 4.5.4 Split Genres
+
+Variable *genres* contains all the genres to which the movie belongs  separeted by "|". In order to see the effect of different genres on *imdb_score*, we compute the mean of the score for every genre. Some movies belong to more than one genre, in that case we count them as separate movies, but with the same score. So, for example, the movie Avatar belongs to four different genres: Action, Adventure, Fantasy and Sci-Fi, and has a score of 7.9. Here we consider it as four different movies (one for each genre) with the same score of 7.9.
+
+```{r}
+# all different genres
+names <- c("Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "History", "Horror", "Musical", "Mystery", "News", "Romance", "Sci-Fi", "Short", "Sport", "Thriller", "War", "Western")
+
+
+avg <- c()
+j <- 1
+
+#Calulate the imdb_score mean for every genre and save it in dataframe
+for(i in names){
+  temp <- lapply(IMDB$genre,grepl,pattern = i)
+  avg[j] <- mean(IMDB$imdb_score[temp == TRUE])
+  j <- j + 1
+}
+avg <- as.data.frame(avg)
+avg$genre <- names
+```
+
+```{r, warning=F, error=F, echo=FALSE}
+#global average for imdb_score
+globalMean <- mean(IMDB$imdb_score)
+
+#plot avg for every genre
+ggplot(avg, aes(x=genre, y=avg, fill=genre)) + geom_bar(stat = "identity") +
+  theme(legend.position = "none") + 
+  scale_y_continuous(breaks = seq(1,10,1)) +
+  geom_hline(yintercept = globalMean, linetype="dashed", color = "grey35", size=1) +
+  coord_flip() +
+  labs(x="Genres", y= "Score", title = "Average IMDB score for different genres") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+We can see that the average score for different genres is approximately the same (around 6-7), with only "Film-Noir" being far from the average (dashed grey line).
+Due to the data cleaning process we are left with no movies that belong to the "Short" and "News" genre, for this reason we do not have an average for those categories. Since all genres fall approximately around the same mean we can conclude that genre does not have a significant effect on the score. 
+
+```{r}
+IMDB <- subset(IMDB, select = -c(genres))
+```
+
+
+## 5. Data Visualization
+
+### 5.1 Number of movies by year
+
+```{r, echo = FALSE}
+ggplot(IMDB, aes(title_year)) +
+  geom_bar() +
+  labs(x = "Year", y = "Movie Count", title = "Number of movies by year") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+We see that most movies were released after 1980s. Since we have such few movies from before the 80's we remove them because they might be not very representative.
+
+```{r}
+IMDB <- IMDB[IMDB$title_year >= 1980,]
+```
+
+We are left with 3657 observations.
+
+### 5.2 IMDB Score Distribution
+
+```{r, echo = FALSE}
+ggplot(IMDB, aes(x = imdb_score)) + 
+  geom_bar() +
+  labs(x="IMDB Score", y="Number of Movies", title = "IMDB Score Distribution") +
+  scale_x_continuous(breaks = seq(1,10,1)) +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  geom_vline(xintercept = globalMean, linetype="dashed", color = "red", size=1) 
+```
+
+We see that the ratings are approximately normally distributed with a mean around 6.5.
+
+### 5.3 Most Profitable Movies in the USA
+
+We add a column named *profit* that is given by the difference between gross earning and the budget of the movie. **It is important to remember that *gross* referes only to USA earnings**. For example, the movie "Spectre" had a budget of 245M and grossed 200M in the USA, resulting in a loss of around 45M, but the movie made over 880M world wide.
+
+```{r}
+#add column profit
+IMDB$profit <- (IMDB$gross - IMDB$budget)
+```
+
+```{r}
+#order movies based on profit
+IMDBprofit <- arrange(IMDB, desc(profit))
+#filter by year. Consider movies after 2000
+IMDBprofit <- IMDBprofit[IMDBprofit$title_year >= 2000, ]
+#top10 by profit
+IMDBprofit <- IMDBprofit[1:10,]
+```
+
+```{r, message=FALSE, echo =  FALSE}
+ggplot(IMDBprofit, aes(x=budget/1000000, y=profit/1000000)) + 
+geom_point() +
+geom_smooth() +
+geom_text_repel(aes(label=movie_title)) +
+labs(x = "Budget $million", y = "Profit $million", title = "10 Most Profitable Movies in the USA (after 2000s)") +
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+If we consider more recent movies (after 2000s) we can see that high budget movies tend to earn more profit.
+
+### 5.4 Top20 Directors with highest average IMDb score
+
+```{r}
+#mean of imdb_score for every director
+directorAvgScore <- aggregate(IMDB$imdb_score, list(IMDB$director_name), mean)
+#order
+directorAvgScore <- arrange(directorAvgScore, desc(x))
+#take first 20 directors
+top20Directors <- directorAvgScore[1:20,]
+
+#rename columns
+names(top20Directors)[names(top20Directors) == "Group.1"] <- "director"
+names(top20Directors)[names(top20Directors) == "x"] <- "avgScore"
+```
+
+```{r}
+top20Directors
+```
+
+
+### 5.5 Top20 Actors with highest movie profits in the USA
+
+```{r}
+#sum profit for every main actor
+actorsProfit <- aggregate(IMDB$profit, list(IMDB$actor_1_name), sum)
+#order
+actorsProfit <- arrange(actorsProfit, desc(x))
+#take first 20 actors
+top20Actors <- actorsProfit[1:20,]
+
+#rename columns
+names(top20Actors)[names(top20Actors) == "Group.1"] <- "Actor"
+names(top20Actors)[names(top20Actors) == "x"] <- "totalProfit"
+```
+
+```{r, echo = FALSE}
+ggplot(top20Actors, aes(factor(x=Actor, levels = Actor), y=totalProfit/1000000, fill = Actor)) + geom_bar(stat = "identity") + 
+coord_flip() +
+scale_y_continuous(breaks = seq(0,1600, 200)) +
+labs(x="Actor Name",y="Total Profits $million", title="Top20 Actors with highest movie profits in the USA") +
+theme(plot.title = element_text(hjust = 0.5)) +
+theme(legend.position = "none")
+```
+
+### 5.6 Relation between number of facebook likes and IMDB score
+
+```{r, message=FALSE, warning=FALSE, echo = FALSE}
+ggplot(IMDB, aes(x=movie_facebook_likes/1000, y=imdb_score, color= content_rating)) + 
+geom_point(alpha=0.5) +
+scale_y_continuous(breaks = seq(0,10,1)) +
+scale_x_continuous(breaks = seq(0,400, 100)) +
+labs(x="Facebook Likes $thousands", y="IMDB score", title = "Relation between number of facebook likes and IMDB score") +
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+Movies with very high Facebook likes (more than 100k) tend to have higher imdb score, while the score for movies with low Facebook likes vary in a very wide range.
+
+## 6. Data Pre-processing
+
+At this point we need to prepare the dataset in order to implement the algorithms. We start by removing some columns that will not be helpful in the prediction. *plot_keywords* are too diverse to be used and variables *movie_imdb_link* and *movie_title* are all unique so they will have no effect.
+
+```{r}
+#remove columns not useful in the prediction
+IMDB <- subset(IMDB, select = -c(aspect_ratio, plot_keywords, movie_imdb_link, movie_title))
+```
+
+Actors are also very different for the whole dataset. We have 3567 unique actors for 3657 movies, so we can drop the names since there are too many to be useful in the prediction.
+
+```{r}
+#total number of unique actors
+sum(uniqueN(IMDB[, c("actor_1_name", "actor_2_name", "actor_3_name")]))
+```
+
+Same for directors: they are too many unique directors to be useful in the prediction. (1624 different directors)
+
+```{r}
+#total number of unique directors
+sum(uniqueN(IMDB[, "director_name"]))
+```
+
+
+```{r}
+#remove columns not useful in the prediction
+IMDB <- subset(IMDB, select= -c(actor_1_name, actor_2_name, actor_3_name, director_name))
+```
+
+We also have to remove column *profit* to avoid multicollinearity, since we obtained that information through other existing variables (*gross* and *budget*).
+
+```{r}
+#remove column profit
+IMDB <- subset(IMDB, select= -c(profit))
+```
+
+### 6.1 Remove highly correlated variables
+
+Before implementing any algorithm we need to check how variables are correlated with each other.
+
+```{r,message=FALSE, error=FALSE, echo =  FALSE}
+ggcorr(IMDB[, -c(11,12)], label = TRUE, label_round = 1, label_size = 3, size = 2, hjust = .85) +
+ggtitle("Correlation Heatmap") +
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+From the graph we can see high correlation between some variables (greater than 0.7). 
+
+In particular, *actor_1_facebook_likes* is highly correleted with *cast_total_facebook_likes* with a value of 0.95, and *actor_2_facebook_likes* and *actor_3_facebook_likes* are somewhat correleted to *cast_total_facebook_likes*. Since the total facebook likes of the whole cast is mostly based on the sum of actor_1, actor_2 and actor_3 we can group *actor_2_facebook_likes* and *actor_3_facebook_likes* togheter and remove the total Facebook likes of the whole cast (*cast_total_facebook_likes*).
+
+There is also a strong correlation between *num_voted_users* and *num_user_for_reviews* (corr of 0.78). To avoid this we can take the ratio between *num_critic_for_reviews* and *num_user_for_reviews* and then remove those columns.
+
+By making these changes we keep approximately the same amount of information and avoid the high correlation between those variables.
+
+```{r}
+#new column with sum of actor 2 and 3 facebook likes
+IMDB$other_actors_facebook_likes <- IMDB$actor_2_facebook_likes + IMDB$actor_3_facebook_likes
+#ratio of critic review
+IMDB$critic_review_ratio <- IMDB$num_critic_for_reviews / IMDB$num_user_for_reviews
+```
+
+```{r}
+#remove columns
+IMDB <- subset(IMDB, select = -c(actor_2_facebook_likes, actor_3_facebook_likes, cast_total_facebook_likes, num_critic_for_reviews, num_user_for_reviews))
+```
+
+```{r,message=FALSE, error=FALSE, echo = FALSE}
+ggcorr(IMDB[, -c(7,8)], label = TRUE, label_round = 1, label_size = 3, size = 2, hjust = .85) +
+ggtitle("Correlation Heatmap") +
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+Now we do not have any high correlation between predictors.
+
+### 6.2 Bin IMDB score
+
+The goal of this project is trying to predict if a movie will be good or bad: we are not interested in making an exact prediction up to decimal points. We assume that a movie with a score of 8 and a movie with a score of 9 are both excellent movies, and movies with scores of 3 and 4 are both bad movies. For this reason we bin the score into buckets:
+
+* **Bad**: score from 0 to 4
+* **Mediocre**: score from 4 to 6
+* **Good**: score from 6 to 8
+* **Excellent**: score from 8 to 10
+
+```{r}
+#new column with the binned_score
+IMDB$binned_score <- cut(IMDB$imdb_score, breaks = c(0,4,6,8,10))
+```
+
+
+### 6.3 Reorder Dataset
+
+We change variables name and positions to make it easier to read and understand.
+
+```{r}
+IMDB <- IMDB[, c(7,8,10,1,6,5,14,12,2,3,13,9,4,11,15)]
+colnames(IMDB) <- c("country", "content", "year", "duration", "poster", "user_vote", "critic_review_ratio", "movie_fb", "director_fb", "actor1_fb", "other_actors_fb", "budget", "gross", "imdb_score", "binned_score")
+```
+
+### 6.4 Split dataset
+
+We want to split the dataset into train set and test set with a 8:2 ratio.
+
+```{r}
+set.seed(42)
+
+sample <- sample.int(n = nrow(IMDB), size= floor(.80*nrow(IMDB)), replace = FALSE)
+train <- IMDB[sample,]
+test <- IMDB[-sample,]
+```
+
+## 7. Implement Algorithms
+
+Dataset is now clean and ready to be used. Since we have binned the score into buckets we are now dealing with a classification problem: predict in what bucket a movie belongs to. The algorithms we are going to implement are:
+
+* Classification Tree
+* Random Forest
+* Ordinal Logisic Regression
+* K-Nearest Neighbors
+* Support Vector Machine
+
+### 7.1 Classification Tree
+
+The first method used is classification tree, a tree-based method which divides the predictor space into a number of simple regions. The basic idea behind **decision trees** is finding a set of rules that best partition your data. This type of method is applicable to both classification problems (as in this case) and regression problems.
+
+The task of growing a decision tree is done by recursive binary splitting: find the splitting rules that best divide the tree into two branches. If we are dealing with classification problem, the Residual Sum of Squares (RSS) cannot be used as criterion for making the binary splits. Instead we can use different methods to asses the quality of the splits, such as the Classification Error Rate: the fraction of training observation in a particular region that do not belong to the most widely occuring class.
+
+In addition to the Classification Error Rate, there are other sensitivity measures that can be used to make the splits, the Gini Index and Cross-Entropy. Both can be used as measures of node purity (low values indicate that a node contains predominant observations from a single class).
+
+
+#### 7.1.1 Full Grown Tree
+
+```{r,message=F}
+library(rpart)
+library(rpart.plot)
+```
+
+We use rpart() function to fit a classification tree in order to predict *binned_score* using all variables but *imdb_score*.
+
+```{r}
+set.seed(42)
+#classification tree model
+tree.IMDB <- rpart(binned_score ~ duration+country+content+year+gross+poster+movie_fb+actor1_fb+other_actors_fb+budget+director_fb+critic_review_ratio+user_vote, data = train, method = "class")
+```
+
+```{r}
+printcp(tree.IMDB)
+```
+
+With the function printcp() we can see the variables actually used to build the tree, as well as the cross validation error results. Cross-validation shows that the full grown tree (5th tree with 9 split) is the best model: the model that minimize the cross-validation error (xerror=0.82604).
+
+```{r} 
+#plot of the full_grown tree with 9 split
+rpart.plot(tree.IMDB)
+```
+
+From the classification rules we can see that if a movie has over 584k user votes on IMDb it gets classified as an excellent movie. This makes sense considering that popular movies have lots of fan that vote for them. Now let's test the accuracy of our model on the *train* and *test* dataset.
+
+```{r}
+#predict on train set
+tree.pred.train <- predict(tree.IMDB, train, type = "class")
+confusionMatrix(tree.pred.train, train$binned_score)
+```
+
+```{r}
+#predict on test set
+tree.pred.test <- predict(tree.IMDB, test, type = "class")
+confusionMatrix(tree.pred.test, test$binned_score)
+```
+
+The full grown tree performs with an accuracy of:
+
+* Train set: 0.7439
+* Test set: 0.7077
+
+#### 7.1.2 Pruned Tree
+
+With the default complexity parameter (cp=0.01), the model only builds 5 trees and the cross-validation results showed that the full-grown tree was the best one. By lowering the complexity parameter value we can force the model to build more trees. 
+
+```{r}
+set.seed(23)
+#fit new classification tree with lower cp value
+tree2.IMDB <- rpart(binned_score ~ duration+country+content+year+gross+poster+movie_fb+actor1_fb+other_actors_fb+budget+director_fb+critic_review_ratio+user_vote, data = train, method = "class", cp=0.000001)
+```
+
+```{r}
+#show cross-validation errors results
+printcp(tree2.IMDB)
+```
+
+We now have 19 trees instead of 5. We can see that the 8th tree has a lower cross-validation error (xerror=0.81014) than the previously full-grown tree (5th tree, xerror=0.82604). Now we can prune this new tree with the cp value that minimize xerror (cp=0.00397614).
+
+```{r}
+#prune tree by cp value that minimize xerror
+pruned.IMDB <- prune(tree2.IMDB, cp=0.00397614)
+```
+
+```{r, message=F, warning=F}
+#plot new pruned tree
+rpart.plot(pruned.IMDB)
+```
+
+As we can see the pruned tree is actually longer than the previous full-grown tree but it gives a lower cross-validation error, so let's test this new "pruned" tree.
+
+```{r}
+#predict train set
+tree.pred.train <- predict(pruned.IMDB, train, type = "class")
+confusionMatrix(tree.pred.train, train$binned_score)
+```
+
+```{r}
+#predict test set
+tree.pred.test <- predict(pruned.IMDB, test, type = "class")
+confusionMatrix(tree.pred.test, test$binned_score)
+```
+
+The pruned tree performs with an accuracy of:
+
+* Train set: 0.7764
+* Test set: 0.7104
+
+#### 7.1.3 Results
+
+Classification Tree       | Train set accuracy      | Test set accuracy
+--------------------------|-------------------------|--------------
+Full-grown tree (9 split) | 0.7439                  | 0.7077
+Pruned Tree (22 split)    | 0.7764                  | 0.7104
+
+The "pruned" tree (8th tree with 22 split) has slightly better performance than our first classification tree (5th tree with 9 split), but not significant enough. The first model creates a more interpretable tree and is a better generalization since it uses less variables and a lower number of splits.
+
+### 7.2 Random Forest
+
+Random Forests are an ensemble learning method for classification and regression. This model works by constructing a multitude of decision trees and outputting the most occurying class (in a classification setting).
+
+In order to explain how a random forest works we need to briefly introduce the concepts of Bootstrapping and Bagging.
+
+Bootstrapping is a resampling method based on repeatedly sampling observations (with replacement) from the original dataset.
+
+Bagging is a general-purpose procedure for reducing the variance of a statistical learning method by averaging a set of observation: take many training set from the population, build a separate prediction model using each training set, and then average the resulting predictions.
+
+Random Forest is an improvement over bagged trees. When building decision trees, Bagging considers all predictors as possible split candidate. Instead, Random Forest only consider a random subset of the predictors. By doing this we avoid the problem of having the same strong predictor in every decision tree, and thus avoid making every tree similar.
+
+#### 7.2.1 Build Model
+
+Grow a random forest using function RandomForest() with *binned_score* as response variable using all predictors except *imdb_score*. In order to chose a suitable number of m variables to consider at each split, we try all of them and choose the m that maximize the accuracy.
+
+```{r message=FALSE}
+library(randomForest)
+set.seed(47)
+
+acc <- c()
+
+#Build 13 different random forest trying all possible m value (1:13)
+for (i in 1:13) {
+  rf <- randomForest(binned_score ~ duration+country+content+year+gross+poster+movie_fb+actor1_fb+other_actors_fb+budget+director_fb+critic_review_ratio+user_vote, data = train, mtry=i)
+  #predict on test set
+  rf.pred.test <- predict(rf, test)
+  #save accuracy in a vector
+  acc[i] <- confusionMatrix(rf.pred.test, test$binned_score)$overall[1]
+}
+```
+
+
+```{r}
+accMat <- cbind(seq(1,13,1), acc)
+colnames(accMat)[colnames(accMat) == ""] <- "mtry"
+
+#plot relation between accuracy and m
+ggplot(as.data.frame(accMat), aes(x=mtry, y=acc)) + 
+scale_x_continuous(breaks = seq(1,13,1)) +
+geom_point() + 
+geom_line() +
+labs(x="mtry", y="Accuracy", title = "Accuracy of different mtry") +
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+We can see from the graph that random forests yields better results than bagging (mtry=13). Considering 3 variables at each split (mtry=3) gives the best accuracy. Now, let's test the model.
+
+#### 7.2.2 Apply Model
+
+```{r}
+set.seed(47)
+
+#grow random forest using mtry=3
+rfB <- randomForest(binned_score ~ duration+country+content+year+gross+poster+movie_fb+actor1_fb+other_actors_fb+budget+director_fb+critic_review_ratio+user_vote, data = train, mtry=3)
+
+#predict on test set
+rfB.pred.test <- predict(rfB, test)
+confusionMatrix(rfB.pred.test, test$binned_score)
+```
+
+Random Forest preforms with an accuracy of: 0.7732
+
+```{r}
+rfB$importance
+```
+
+The interpretation of Bagging or a Random Forest is typically difficult: despite increasing the accuracy of the prediction, it loses the ease of interpretation.
+
+One can get an overall summary of the importance of each predictor using the Gini Index. As we have already said it measures the impurity of a node where values close to zero mean that that node contains only one predominant class. It is possible to obtain an average of Gini Index calculated for each predictor of each tree created, that measure is called *variable importance*. Mean Decrease in Gini is the average (mean) of a variable’s total decrease in node impurity, weighted by the proportion of samples reaching that node in each individual decision tree in the random forest. This is effectively a measure of how important a variable is for estimating the value of the target variable across all of the trees that make up the forest.
+
+In our case we can see that *user_vote*, *duration* and *gross* are all important variables, while *country*, *content* and *poster* are less important.
+
+### 7.3 Ordinal Logistic Regression
+
+Logistic Regression models the probabilities for calssification problems with two possible outcomes. It's an extension of linear regression for classification problems.
+
+Rather than modeling our dependant variable directly, we use the probability of our dependent variable belonging to a given category. In order to do this we use the logistic probability function and the maximum likelihood method. Since the prediction of a linear model can assume values below zero and above one, we need a way to convert this in probabilities (between 0 and 1). So, instead of fitting a straight line or hyperplane, the logistic regression model uses the logistic function to map the output of a linear equation between 0 and 1, which represent the probability of belonging to a given class.
+
+The interpretation of this model is more difficult than that seen in previous methods and in linear regression models since there is no direct relationship between the coefficients and the dependent variable.
+
+Usually the logistic regression model is used for two-class problems, a possible extension to multi-classification problems is given by the Ordinal Logistic Regression. Ordinal Logistic Regression is a regression model for ordinal dependent variables. In our case *binned_score* is an ordered categorical variable where *(0,4]* < *(4,6]* < *(6,8]* < *(8,10]*.
+
+One of the assumptions underlying Ordinal Logistic Regression is that the relationship between each pair of outcome groups is the same. In other words, Ordinal Logistic Regression assumes that the coefficients that describe the relationship between, say, the lowest versus all higher categories of the response variable are the same as those that describe the relationship between the next lowest category and all higher categories, etc. This is called the *proportional odds assumption* or the *parallel regression assumption*. Because the relationship between all pairs of groups is the same, there is only one set of coefficients. If this was not the case, we would need different sets of coefficients in the model to describe the relationship between each pair of outcome groups. Thus, in order to asses the appropriateness of our model, we need to evaluate whether the proportional odds assumption is tenable. Statistical tests that do this are available in some software packages. However, these tests have been criticized for having a tendency to reject the null hypothesis (that the sets of coefficients are the same).
+
+Therefore not having a precise way to check the proportional odds assumption, we have assumed that the relationships between our classes are the same for the whole model.
+
+While there certainly are better suited model to perfrom classification, it is still useful to apply a simple method such as logistic regression in order to have more benchmarks to compare models.
+
+#### 7.3.1 Model Assumptions
+
+* Before building our model we need to make sure that our dependent variable *binned_score* is correctly coded as an ordered factor.
+
+```{r}
+train$binned_score <- as.ordered(train$binned_score)
+```
+
+* In order to be able to apply Ordinal Logistic Regression, one or more of the independent variables have to be either continious, categorical or ordinal. In our case we have a mix of continous and categorical so the assumption holds.
+
+* There is no multicollinearity between predictors as we have previously seen.
+
+
+#### 7.3.2 Build Model
+
+```{r, message=F, warning=F}
+library(haven)
+library(MASS)
+```
+
+Now we can build our model using polr() function with *binned_score* as response variable and using variables *country*, *duration*, *content*, *year*, *critic_review_ratio*, *director_fb* as predictors.
+
+```{r, warning=F, error=F}
+#build olr model
+olr <- polr(binned_score ~ country + duration + content + year + critic_review_ratio + director_fb, data = train, Hess = TRUE)
+```
+
+```{r}
+summary(olr)
+```
+
+It is possible to see the value of the intercepts, which are sometimes called cutpoints. The intercepts indicate where the latent variable is cut to make the four groups that we observe in our data.
+
+#### 7.3.3 Calculate p-values
+
+The summary() function does not return p-values for Ordinal Logistic Regression, but we can still calculate them by comparing the t-value against the standard normal distribution.
+
+```{r}
+#store table
+cptable <- coef(summary(olr))
+
+#calculate and store p value
+p <- pnorm(abs(cptable[, "t value"]), lower.tail = F) * 2
+
+#combine table
+cptable <- cbind(cptable, "p value" = p)
+cptable
+```
+
+We can see that all predictors except *critic_review_ratio* are statistically significant. let us build a new model without it.
+
+```{r}
+#new model without critic_review_ratio
+olr2 <- polr(binned_score ~ country + duration + content + year  + director_fb, data = train, Hess = TRUE)
+```
+
+Again we calculate p-values.
+
+```{r}
+#store table
+cptable2 <- coef(summary(olr2))
+
+#calculate and store p value
+p <- pnorm(abs(cptable2[, "t value"]), lower.tail = F) * 2
+
+#combine table
+cptable2 <- cbind(cptable2, "p value" = p)
+cptable2
+```
+
+Now all predictors are statistically significant.
+
+The coefficients from the model can be somewhat difficult to interpret because they are scaled in terms of log-odds. Another way to interpret logistic regression models is to convert the coefficients into odds ratios, making exponential log-odds.
+
+```{r}
+#add 3 zero is usefull to have a fitted odds_ratio column
+odds_ratio <- c(exp(coef(olr2)),c(0,0,0))
+
+#combine table
+cptable2 <- cbind(cptable2, "Odds ratio" = odds_ratio)
+cptable2
+```
+
+New coefficients are called proportional odds ratios and we would interpret these pretty much as we would odds ratios from a binary logistic regression.
+For example we will say that for a unit increase in duration, it means an increment of $1.03$ of the odds that is $p(X)/1-p(x)$, given all the other variables of the model held constant. 
+
+#### 7.3.4 Apply Model
+
+We can now apply our model on the *train* and *test* set.
+
+```{r}
+#predict train set
+olr2.pred <- predict(olr2, train)
+confusionMatrix(olr2.pred, train$binned_score)
+```
+
+```{r}
+#predict test set
+olr2.pred <- predict(olr2, test)
+confusionMatrix(olr2.pred, test$binned_score)
+```
+
+Our Ordinal Logistic Regression model performs with an accuracy of:
+
+* Train Set: 0.6749
+* Test Set: 0.638
+
+### 7.4 K-Nearest Neighbors
+
+K-Nearest Neighbors is a non-parametric method used for classification and regression. KNN is a lazy learner, meaning that computation is deferred until the actual classification task.
+
+Simply given a positive integer K and a test observation, the KNN classifier first identifies the K training points closest to our test observation based on the Euclidean Distance metric. Then it assign a class based on the most occuring class of its K nearest neighbors.
+
+K represents the number of neighbors in the training set closest to the test observation. The choice of K has a drastic effect on the KNN model. K = 1 (Nearest Neighbors) leads to a too flexible decision boundary, while K too large can lead to a tightening of the decision boundaries and classyfing everything as the most occuring class in our dataset. Our approach in finding the optimal value for K is trying different values and choosing the one which maximize the predictive accuracy of the model.
+
+#### 7.4.1 Dummy variabels and Scaling
+
+In order to apply KNN we have to create dummy variabels for our categorical variables: *country* and *content*.
+
+```{r}
+#copy dataframe
+IMDB2 <- IMDB
+IMDB2$country <- as.factor(IMDB2$country)
+IMDB2$content <- as.factor(IMDB2$content)
+
+#dummy for country - creates a boolean vector for every level of country
+IMDB2[,c("country_UK", "country_USA", "country_Others")] <- model.matrix( ~ country - 1, data = IMDB2)
+
+#dummy for content - - creates a boolean vector for every level of content
+IMDB2[,c("content_G", "content_NC17", "content_PG", "content_PG13", "content_R")] <- model.matrix( ~ content - 1, data = IMDB2)
+
+#remove categorical variables
+IMDB2 <- IMDB2[,-c(1,2,14)]
+```
+
+Then we have to create *train* and *test* set for our dataframe copy.
+
+```{r}
+#train and test set
+train2 <- IMDB2[sample,]
+test2 <- IMDB2[-sample,]
+```
+
+Since KNN normally uses Euclidean distance we need to normalize our variables so that they are in the same scale.
+
+```{r}
+train2.std <- scale(train2[,-12])
+test2.std <- scale(test2[,-12])
+```
+
+#### 7.4.2 Find best K
+
+To find the optimal value of K we run the algorithm trying k = 1:20.
+
+```{r}
+library(class)
+set.seed(12)
+
+#vector where we store accuracies
+knn.acc <- c()
+
+#knn with k 1:20
+for (i in 1:20) {
+  knn.pred <- knn(train2.std, test2.std, train2$binned_score, k = i)
+  #save accuracy in a vector
+  knn.acc[i] <- mean(knn.pred == test$binned_score)
+}
+```
+
+```{r}
+knn.acc <- cbind(seq(1,20,1), knn.acc)
+knn.acc <- as.data.frame(knn.acc)
+```
+
+```{r}
+ggplot(knn.acc, aes(x=V1, y=knn.acc)) +
+  scale_x_continuous(breaks = seq(1,20,1)) +
+  labs(x="K", y="Accuracy", title = "Relation between number of K and accuracy") +
+  geom_point() +
+  geom_line() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+K = 14 gives best accuracy.
+
+#### 7.4.3 Apply model
+
+Now that we know the value for k that maximize the accuracy we can apply our model on the *test* set.
+
+```{r}
+set.seed(12)
+library(class)
+knn.pred.test <- knn(train2.std, test2.std, train2$binned_score, k=14)
+```
+
+```{r}
+confusionMatrix(knn.pred.test, test2$binned_score)
+```
+
+Test set accuracy = 0.6954
+
+### 7.5 Support Vector Machine
+
+Support Vector Machine is a supervised machine learning algorithm that aims to find a N-dimensional hyperplane that distinctly classifies the data points.
+
+To separate two classes of data points, there are many possible hyperplane that could be chosen, SVM finds the plane that has the maximum margin: the separating hyperplane farthest from the training observation of both classes. The margins are found by calculating the smallest perpendicular distance from the hyperplane to the training data. The test observation is classified on the basis of which part of the maximal margin it falls.
+
+*Support vectors* are the training observations in the p-dimensional space that are closer to the hyperplane and influence the position and orientation of the hyperplane. In order to create a more robust classifier, we can allow some observations to violate the margin, this is called *Support Vector Classifier* (or *Soft Margin Classifier*).
+
+In many cases it is not possible to linearly separete classes. SVM applies the same approach as in linear regression: modiyfing the feature space by adding high order polynomial or other transformation to achieve non-linearity. This is called *kernel trick*: a *kenrel* is a function that quantifies the similarity of two observations. The idea is that we want to enlarge our feature space in order to accomodate a non-linear boundary between the classes. Formally, a Support Vector Classifier is a Support Vector Machine with a linear Kernel. It is called Support Vector Machine only when it does not use a linear Kernel and thus does not have linear decision boundaries. 
+
+SVM can also be used for multi-class classification. The approach is to reduce a single multi-class problem into multiple binary classification problems. There are two ways to achieve this:
+
+* *one-vs-one*: distinguish between every pair of classes
+* *one-vs-all*: distinguish between one class and all of the others.
+
+In our case we use a multiclass SVM with 10-fold cross validation approach that allows to choose the model with the best cost. The kernel that led to the best results is the radial kernel.
+
+#### 7.5.1 Build Model
+
+We fit a SVM with the function *svm()* using *binned_score* as response variable and *year*, *duration*, *budget*, *gross* and *user_vote* as independent variable.
+
+```{r}
+library(e1071)
+svm.fit <- svm(binned_score ~ year + duration + budget + gross + user_vote + movie_fb, data=train,kernel = "radial", cost = 10, gamma=1)
+```
+
+#### 7.5.2 Cross-Validation & Parameter tuning
+
+By using function *tune()* we can use cross-validation to get the best cost for our model.
+
+```{r}
+#cross-validation
+tune.out <- tune(svm, binned_score ~ year + duration + budget + gross + user_vote + movie_fb, data=train,kernel = "radial", ranges=list(cost=c(0.001, 0.01, 0.1, 1, 5, 10, 100)))
+```
+
+```{r}
+tune.out$performances
+```
+
+We can see that cost=10 results in the best performance (error=0.2564028).
+
+```{r}
+#select the best model
+bestmod <- tune.out$best.model
+```
+
+
+#### 7.5.3 Apply Model
+
+We can now apply the model we just created on the *test* dataset.
+
+```{r}
+svm.pred <- predict(bestmod, test)
+confusionMatrix(svm.pred, test$binned_score)
+```
+
+Support Vector Machine performs with an accuracy of: 0.7445
+
+
+## 8. Conclusions
+
+Algorithm                  | Train set Accuracy | Test set Accuracy  
+---------------------------|--------------------|--------------------
+Classification Tree        |       0.7764       |      0.7104        
+Random Forest              |                    |      0.7732        
+Ordinal Logistic Regresion |       0.6749       |      0.6380        
+KNN                        |                    |      0.6954
+SVM                        |                    |      0.7445
+
+We implemented five different algorithms in order to classify movies in four categories. From the confusion matrix of our models we can see that every model had problems in classifying movies belonging to the **bad** (0,4] category.
+
+Another common misclassification that is happening in all our models is between category **Mediocre** (4,6] and **Good** (6,8]: all our models are overestimating some movies, classifying them as **Good** (6,8]  while they actually are **Mediocre** (4,6].
+
+*Random Forest* is the model that yields better results with an accuracy of 77%, followed by *Support Vector Machine* with an accuracy of 0.7445. *Classification Tree* and *K-Nearest Neighbors *are both at around 70% accuracy and *Ordinal Logistic Regressio*n is the worse model with an accuracy of 64%.
